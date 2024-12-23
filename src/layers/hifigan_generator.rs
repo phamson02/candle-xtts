@@ -4,45 +4,10 @@ use candle_nn::{Conv1d, Conv1dConfig, ConvTranspose1d, ConvTranspose1dConfig, Mo
 use candle_transformers::models::encodec::conv_transpose1d_weight_norm;
 use std::iter::Iterator;
 
+use crate::layers::utils::{conv1d, conv1d_weight_norm};
+
 fn get_padding(kernel_size: usize, dilation: usize) -> usize {
     (kernel_size * dilation - dilation) / 2
-}
-
-pub fn conv1d_weight_norm(
-    in_c: usize,
-    out_c: usize,
-    kernel_size: usize,
-    bias: bool,
-    config: candle_nn::Conv1dConfig,
-    vb: VarBuilder,
-) -> Result<Conv1d> {
-    let weight_g = vb.get((out_c, 1, 1), "weight_g")?;
-    let weight_v = vb.get((out_c, in_c, kernel_size), "weight_v")?;
-    let norm_v = weight_v.sqr()?.sum_keepdim((1, 2))?.sqrt()?;
-    let weight = weight_v.broadcast_mul(&weight_g)?.broadcast_div(&norm_v)?;
-    let bias = if bias {
-        Some(vb.get(out_c, "bias")?)
-    } else {
-        None
-    };
-    Ok(Conv1d::new(weight, bias, config))
-}
-
-pub fn conv1d(
-    in_c: usize,
-    out_c: usize,
-    kernel_size: usize,
-    bias: bool,
-    config: candle_nn::Conv1dConfig,
-    vb: VarBuilder,
-) -> Result<Conv1d> {
-    let weight = vb.get((out_c, in_c, kernel_size), "weight")?;
-    let bias = if bias {
-        Some(vb.get(out_c, "bias")?)
-    } else {
-        None
-    };
-    Ok(Conv1d::new(weight, bias, config))
 }
 
 pub struct ResBlock1Config {
@@ -179,6 +144,7 @@ impl ResBlock2 {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
 pub enum ResBlockType {
     ResBlock1,
     ResBlock2,
@@ -198,6 +164,7 @@ impl ResBlock {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct HifiganGeneratorConfig {
     in_channels: usize,
     out_channels: usize,
@@ -216,31 +183,22 @@ pub struct HifiganGeneratorConfig {
 }
 
 impl HifiganGeneratorConfig {
-    pub fn default(
-        in_channels: usize,
-        out_channels: usize,
-        resblock_type: ResBlockType,
-        resblock_dilation_sizes: Vec<Vec<usize>>,
-        resblock_kernel_sizes: Vec<usize>,
-        upsample_kernel_sizes: Vec<usize>,
-        upsample_initial_channel: usize,
-        upsample_factors: Vec<usize>,
-    ) -> Self {
+    pub fn default(in_channels: usize, out_channels: usize) -> Self {
         Self {
             in_channels,
             out_channels,
-            resblock_type,
-            resblock_dilation_sizes,
-            resblock_kernel_sizes,
-            upsample_kernel_sizes,
-            upsample_initial_channel,
-            upsample_factors,
-            inference_padding: 5,
-            cond_channels: 0,
-            conv_pre_weight_norm: true,
-            conv_post_weight_norm: true,
-            conv_post_bias: true,
-            cond_in_each_up_layer: false,
+            resblock_type: ResBlockType::ResBlock1,
+            resblock_dilation_sizes: vec![vec![1, 3, 5], vec![1, 3, 5], vec![1, 3, 5]],
+            resblock_kernel_sizes: vec![3, 7, 11],
+            upsample_kernel_sizes: vec![16, 16, 4, 4],
+            upsample_initial_channel: 512,
+            upsample_factors: vec![8, 8, 2, 2],
+            inference_padding: 0,
+            cond_channels: 512,
+            conv_pre_weight_norm: false,
+            conv_post_weight_norm: false,
+            conv_post_bias: false,
+            cond_in_each_up_layer: true,
         }
     }
 }
@@ -362,8 +320,14 @@ impl HifiganGenerator {
         };
 
         // config.conv_pre_weight_norm
+        if !config.conv_pre_weight_norm {
+            todo!()
+        }
 
         // config.conv_post_weight_norm
+        if !config.conv_post_weight_norm {
+            todo!()
+        }
 
         let conds = if cond_in_each_up_layer {
             let conds = (0..num_upsamples)
