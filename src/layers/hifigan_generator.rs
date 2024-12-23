@@ -179,6 +179,11 @@ impl ResBlock2 {
     }
 }
 
+pub enum ResBlockType {
+    ResBlock1,
+    ResBlock2,
+}
+
 pub enum ResBlock {
     ResBlock1(ResBlock1),
     ResBlock2(ResBlock2),
@@ -196,7 +201,7 @@ impl ResBlock {
 pub struct HifiganGeneratorConfig {
     in_channels: usize,
     out_channels: usize,
-    resblock_type: ResBlock,
+    resblock_type: ResBlockType,
     resblock_dilation_sizes: Vec<Vec<usize>>,
     resblock_kernel_sizes: Vec<usize>,
     upsample_kernel_sizes: Vec<usize>,
@@ -214,7 +219,7 @@ impl HifiganGeneratorConfig {
     pub fn default(
         in_channels: usize,
         out_channels: usize,
-        resblock_type: ResBlock,
+        resblock_type: ResBlockType,
         resblock_dilation_sizes: Vec<Vec<usize>>,
         resblock_kernel_sizes: Vec<usize>,
         upsample_kernel_sizes: Vec<usize>,
@@ -301,7 +306,7 @@ impl HifiganGenerator {
                     config.resblock_dilation_sizes.iter(),
                 )
                 .map(|(&k, d)| match config.resblock_type {
-                    ResBlock::ResBlock1(_) => {
+                    ResBlockType::ResBlock1 => {
                         let resblock_config = ResBlock1Config {
                             channels: ch,
                             kernel_size: k,
@@ -312,7 +317,7 @@ impl HifiganGenerator {
                                 .unwrap(),
                         )
                     }
-                    ResBlock::ResBlock2(_) => {
+                    ResBlockType::ResBlock2 => {
                         let resblock_config = ResBlock2Config {
                             channels: ch,
                             kernel_size: k,
