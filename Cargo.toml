@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 candle-core = "0.8.1"
+candle-einops = "0.1.2"
 candle-nn = "0.8.1"
 candle-transformers = "0.8.1"
 serde = "1.0.216"

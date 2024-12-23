@@ -81,6 +81,27 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "candle-core"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5b18de020c2729dbf7ac390325312644808b6ba9b7962f1f724e9185b1d53c7"
+dependencies = [
+ "byteorder",
+ "gemm",
+ "half",
+ "memmap2",
+ "num-traits",
+ "num_cpus",
+ "rand",
+ "rand_distr",
+ "rayon",
+ "safetensors",
+ "thiserror",
+ "yoke",
+ "zip",
+]
+
+[[package]]
+name = "candle-core"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1e306c8a4276ba57ce9fac76d823cc8c8a7fca14bf222ac20ad8b12c4273152"
@@ -102,12 +123,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "candle-einops"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6d8a8f31503498ab56ca6480a26219d5c569ad9923e7dd25fa718e35d1ed978"
+dependencies = [
+ "candle-core 0.6.0",
+ "candle-einops-macros",
+]
+
+[[package]]
+name = "candle-einops-macros"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b475e24a2b643663f580641ce4146036e99be7e6c66a80ed659ba0dd8dfa539"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "candle-nn"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39d417059c44d719fd03a0f711ccfe148d341469c9273d4b5731ebe965b2c97e"
 dependencies = [
- "candle-core",
+ "candle-core 0.8.1",
  "half",
  "num-traits",
  "rayon",
@@ -123,7 +165,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "962a277e90dea20968164175138b836bba8b51b57505579fd628d79933da2b70"
 dependencies = [
  "byteorder",
- "candle-core",
+ "candle-core 0.8.1",
  "candle-nn",
  "fancy-regex",
  "num-traits",
@@ -139,7 +181,8 @@ dependencies = [
 name = "candle-xtts"
 version = "0.1.0"
 dependencies = [
- "candle-core",
+ "candle-core 0.8.1",
+ "candle-einops",
  "candle-nn",
  "candle-transformers",
  "serde",
