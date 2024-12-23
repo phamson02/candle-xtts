@@ -5,7 +5,7 @@ use candle_transformers::models::encodec::conv_transpose1d_weight_norm;
 use std::iter::Iterator;
 
 fn get_padding(kernel_size: usize, dilation: usize) -> usize {
-    (kernel_size - 1) * dilation / 2
+    (kernel_size * dilation - dilation) / 2
 }
 
 pub fn conv1d_weight_norm(
@@ -84,7 +84,7 @@ impl ResBlock1 {
                         dilation: dilation,
                         groups: 1,
                     },
-                    vb.pp(&format!("conv1.{i}")),
+                    vb.pp(&format!("convs1.{i}")),
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -102,7 +102,7 @@ impl ResBlock1 {
                         dilation: 1,
                         groups: 1,
                     },
-                    vb.pp(&format!("conv2.{i}")),
+                    vb.pp(&format!("convs2.{i}")),
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -113,12 +113,12 @@ impl ResBlock1 {
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         std::iter::zip(self.convs1.iter(), self.convs2.iter()).try_fold(
             x.clone(),
-            |x, (conv1, conv2)| -> Result<Tensor> {
-                let xt = leaky_relu(&x, 0.1)?;
-                let xt = conv1.forward(&xt)?;
-                let xt = leaky_relu(&xt, 0.1)?;
-                let xt = conv2.forward(&xt)?;
-                x + xt
+            |acc, (conv1, conv2)| -> Result<Tensor> {
+                let mut xt = leaky_relu(&acc, 0.1)?;
+                xt = conv1.forward(&xt)?;
+                xt = leaky_relu(&xt, 0.1)?;
+                xt = conv2.forward(&xt)?;
+                xt + acc
             },
         )
     }
@@ -162,7 +162,7 @@ impl ResBlock2 {
                         dilation: dilation,
                         groups: 1,
                     },
-                    vb.pp(&format!("conv_{i}")),
+                    vb.pp(&format!("conv.{i}")),
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -171,11 +171,10 @@ impl ResBlock2 {
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        self.convs.iter().try_fold(x.clone(), |x, conv| {
-            let xt = leaky_relu(&x, 0.1)?;
-            let xt = conv.forward(&xt)?;
-            let xt = (xt + x)?;
-            Ok(xt)
+        self.convs.iter().try_fold(x.clone(), |acc, conv| {
+            let mut xt = leaky_relu(&acc, 0.1)?;
+            xt = conv.forward(&xt)?;
+            xt + acc
         })
     }
 }
@@ -183,6 +182,15 @@ impl ResBlock2 {
 pub enum ResBlock {
     ResBlock1(ResBlock1),
     ResBlock2(ResBlock2),
+}
+
+impl ResBlock {
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        match self {
+            ResBlock::ResBlock1(resblock) => resblock.forward(x),
+            ResBlock::ResBlock2(resblock) => resblock.forward(x),
+        }
+    }
 }
 
 pub struct HifiganGeneratorConfig {
@@ -233,6 +241,7 @@ impl HifiganGeneratorConfig {
 }
 
 pub struct HifiganGenerator {
+    num_kernels: usize,
     conv_pre: Conv1d,
     ups: Vec<ConvTranspose1d>,
     resblocks: Vec<ResBlock>,
@@ -370,6 +379,7 @@ impl HifiganGenerator {
         };
 
         Ok(Self {
+            num_kernels,
             conv_pre,
             ups,
             resblocks,
@@ -380,6 +390,35 @@ impl HifiganGenerator {
     }
 
     pub fn forward(&self, x: &Tensor, g: Option<&Tensor>) -> Result<Tensor> {
+        let mut o = self.conv_pre.forward(x)?;
+
+        if let Some(cond_layer) = self.cond_layer.as_ref() {
+            o = (o + cond_layer.forward(g.unwrap())?)?;
+        }
+
+        for i in 0..self.ups.len() {
+            o = leaky_relu(&o, 0.1)?;
+            o = self.ups[i].forward(&o)?;
+            o = if let Some(conds) = self.conds.as_ref() {
+                (o + conds[i].forward(g.unwrap())?)?
+            } else {
+                o
+            };
+            let z_sum_init = self.resblocks[i * self.num_kernels].forward(&o)?;
+            let z_sum = (1..self.num_kernels).try_fold(z_sum_init, |z_sum, j| {
+                let z = self.resblocks[i * self.num_kernels + j].forward(&o)?;
+                z_sum + z
+            })?;
+            o = (z_sum / self.num_kernels as f64)?;
+            o = leaky_relu(&o, 0.1)?;
+            o = self.conv_post.forward(&o)?;
+            o = o.tanh()?;
+        }
+
+        Ok(o)
+    }
+
+    pub fn inference(&self, x: &Tensor) -> Result<Tensor> {
         todo!()
     }
 }

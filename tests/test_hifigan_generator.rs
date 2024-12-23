@@ -2,8 +2,8 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct TestData {
-    input: Vec<Vec<Vec<f32>>>,
-    output: Vec<Vec<Vec<f32>>>,
+    input: Vec<Vec<Vec<f64>>>,
+    output: Vec<Vec<Vec<f64>>>,
 }
 
 #[cfg(test)]
@@ -26,7 +26,7 @@ mod tests {
         let expected_output = &test_data.output[0];
 
         let res1_config = ResBlock1Config::default(2);
-        let res1_vb = VarBuilder::from_backend(Box::new(Ones), DType::F32, Device::Cpu);
+        let res1_vb = VarBuilder::from_backend(Box::new(Ones), DType::F64, Device::Cpu);
         let res1 = ResBlock1::new(res1_vb, &res1_config).unwrap();
 
         let input_tensor = Tensor::from_vec(
@@ -41,7 +41,7 @@ mod tests {
 
         dbg!(&output);
 
-        assert_tensors_approx_equal(&output[0], &expected_output, 1e-4);
+        assert_tensors_approx_equal(&output[0], &expected_output, Some(1e-4));
     }
 
     #[test]
@@ -55,7 +55,7 @@ mod tests {
         let expected_output = &test_data.output[0];
 
         let res2_config = ResBlock2Config::default(2);
-        let res2_vb = VarBuilder::from_backend(Box::new(Ones), DType::F32, Device::Cpu);
+        let res2_vb = VarBuilder::from_backend(Box::new(Ones), DType::F64, Device::Cpu);
         let res2 = ResBlock2::new(res2_vb, &res2_config).unwrap();
 
         let input_tensor = Tensor::from_vec(
@@ -70,12 +70,16 @@ mod tests {
 
         dbg!(&output);
 
-        assert_tensors_approx_equal(&output[0], &expected_output, 1e-4);
+        assert_tensors_approx_equal(&output[0], &expected_output, None);
     }
 
-    // Example helper functions (to be implemented based on your actual data structures)
-    fn assert_tensors_approx_equal(output: &Vec<Vec<f32>>, expected: &Vec<Vec<f32>>, tol: f32) {
+    fn assert_tensors_approx_equal(
+        output: &Vec<Vec<f64>>,
+        expected: &Vec<Vec<f64>>,
+        tol: Option<f64>,
+    ) {
         assert_eq!(output.len(), expected.len(), "Batch size mismatch");
+        let tol = tol.unwrap_or(1e-6);
         for (batch_idx, (out_channel, exp_channel)) in
             output.iter().zip(expected.iter()).enumerate()
         {
