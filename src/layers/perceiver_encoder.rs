@@ -1,3 +1,5 @@
+use std::arch::x86_64;
+
 use candle_core::{Result, Tensor, D};
 use candle_nn::{linear, linear_no_bias, ops::softmax, Linear, Module, VarBuilder};
 
@@ -9,6 +11,57 @@ impl GEGLU {
             [x, gates] => x * gates.gelu()?,
             _ => unreachable!(),
         }
+    }
+}
+
+pub struct Attend {}
+
+impl Attend {
+    pub fn forward(
+        &self,
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        mask: Option<&Tensor>,
+    ) -> Result<Tensor> {
+        let (_, _, _, n_dim) = q.dims4()?;
+        let scale = (n_dim as f64).powf(-0.25);
+        let q = (q * scale)?;
+        let k = (k.transpose(2, 3)? * scale)?;
+        let v = v.contiguous()?;
+        let mut qk = q.matmul(&k)?;
+        if let Some(mask) = mask {
+            let mask = mask.unsqueeze(1)?.unsqueeze(1)?;
+            qk = qk.broadcast_add(&mask)?
+        }
+        let w = { softmax(&qk, D::Minus1)? };
+        let wv = w.matmul(&v)?;
+        Ok(wv)
+    }
+}
+
+pub struct RMSNorm {
+    scale: f64,
+    gamma: Tensor,
+}
+
+impl RMSNorm {
+    pub fn new(vb: VarBuilder, dim: usize) -> Result<Self> {
+        let gamma = vb.get((dim,), "gamma")?;
+        dbg!(&gamma.shape());
+        Ok(Self {
+            scale: (dim as f64).powf(0.5),
+            gamma,
+        })
+    }
+
+    fn l2_normalize(&self, x: &Tensor) -> Result<Tensor> {
+        let l2_norm = x.powf(2.0)?.sum_keepdim(D::Minus1)?.sqrt()?;
+        x.broadcast_div(&l2_norm)
+    }
+
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        (self.l2_normalize(x)? * self.scale)?.broadcast_mul(&self.gamma)
     }
 }
 
@@ -98,6 +151,7 @@ pub struct PerceiverResampler {
     proj_context: Option<Linear>,
     layers: Vec<AttentionBlock>,
     latents: Tensor,
+    norm: RMSNorm,
 }
 
 impl PerceiverResampler {
@@ -125,25 +179,33 @@ impl PerceiverResampler {
             )?);
         }
 
-        todo!()
+        let norm = RMSNorm::new(vb.pp("norm"), config.dim)?;
+
+        Ok(Self {
+            proj_context,
+            layers,
+            latents,
+            norm,
+        })
     }
 
     pub fn forward(&self, x: &Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
         let batch = x.dims()[0];
+        let mut x = x.clone();
         if let Some(proj_context) = self.proj_context.as_ref() {
-            let x = proj_context.forward(x)?;
+            x = proj_context.forward(&x.clone())?;
         }
 
-        let latents =
+        let mut latents =
             self.latents
                 .repeat((batch, self.latents.dims()[0], self.latents.dims()[1]))?;
 
         for layer in &self.layers {
-            let latents = (layer.attention.forward(&latents.clone(), x, mask)? + latents.clone())?;
-            let latents = (layer.feed_forward.forward(&latents.clone())? + latents.clone())?;
+            latents = (layer.attention.forward(&latents.clone(), &x, mask)? + latents.clone())?;
+            latents = (layer.feed_forward.forward(&latents.clone())? + latents.clone())?;
         }
 
-        todo!()
+        self.norm.forward(&latents)
     }
 }
 
@@ -216,31 +278,5 @@ impl Attention {
             }
             _ => unreachable!(),
         }
-    }
-}
-
-pub struct Attend {}
-
-impl Attend {
-    pub fn forward(
-        &self,
-        q: &Tensor,
-        k: &Tensor,
-        v: &Tensor,
-        mask: Option<&Tensor>,
-    ) -> Result<Tensor> {
-        let (_, _, _, n_dim) = q.dims4()?;
-        let scale = (n_dim as f64).powf(-0.25);
-        let q = (q * scale)?;
-        let k = (k.transpose(2, 3)? * scale)?;
-        let v = v.contiguous()?;
-        let mut qk = q.matmul(&k)?;
-        if let Some(mask) = mask {
-            let mask = mask.unsqueeze(1)?.unsqueeze(1)?;
-            qk = qk.broadcast_add(&mask)?
-        }
-        let w = { softmax(&qk, D::Minus1)? };
-        let wv = w.matmul(&v)?;
-        Ok(wv)
     }
 }
