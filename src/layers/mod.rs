@@ -1,3 +1,4 @@
+pub mod conditioning_encoder;
 pub mod gpt;
 pub mod hifigan_decoder;
 pub mod hifigan_generator;

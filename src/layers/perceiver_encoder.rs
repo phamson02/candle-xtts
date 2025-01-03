@@ -1,18 +1,5 @@
-use std::arch::x86_64;
-
 use candle_core::{Result, Tensor, D};
 use candle_nn::{linear, linear_no_bias, ops::softmax, Linear, Module, VarBuilder};
-
-pub struct GEGLU {}
-
-impl GEGLU {
-    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        match (x.chunk(2, D::Minus1)?).as_slice() {
-            [x, gates] => x * gates.gelu()?,
-            _ => unreachable!(),
-        }
-    }
-}
 
 pub struct Attend {}
 
@@ -48,7 +35,6 @@ pub struct RMSNorm {
 impl RMSNorm {
     pub fn new(vb: VarBuilder, dim: usize) -> Result<Self> {
         let gamma = vb.get((dim,), "gamma")?;
-        dbg!(&gamma.shape());
         Ok(Self {
             scale: (dim as f64).powf(0.5),
             gamma,
@@ -67,27 +53,19 @@ impl RMSNorm {
 
 pub struct FeedForward {
     linear1: Linear,
-    geglu: GEGLU,
     linear2: Linear,
 }
 
 impl FeedForward {
     pub fn new(vb: VarBuilder, dim: usize, mult: usize) -> Result<Self> {
         let dim_inner = dim * mult * 2 / 3;
-        let linear1 = linear(dim, dim_inner * 2, vb.pp("linear1"))?;
-        let linear2 = linear(dim_inner, dim, vb.pp("linear2"))?;
-        let geglu = GEGLU {};
-        Ok(Self {
-            linear1,
-            geglu,
-            linear2,
-        })
+        let linear1 = linear(dim, dim_inner * 2, vb.pp("0"))?;
+        let linear2 = linear(dim_inner, dim, vb.pp("2"))?;
+        Ok(Self { linear1, linear2 })
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let x = self.linear1.forward(x)?;
-        let x = self.geglu.forward(&x)?;
-        self.linear2.forward(&x)
+        x.apply(&self.linear1)?.gelu()?.apply(&self.linear2)
     }
 }
 
@@ -105,7 +83,7 @@ impl AttentionBlock {
         mult: usize,
     ) -> Result<Self> {
         let attention = Attention::new(
-            vb.pp("attention"),
+            vb.pp("0"),
             &AttentionConfig {
                 dim,
                 dim_context: dim,
@@ -113,7 +91,7 @@ impl AttentionBlock {
                 heads,
             },
         )?;
-        let feed_forward = FeedForward::new(vb.pp("ff"), dim, mult)?;
+        let feed_forward = FeedForward::new(vb.pp("1"), dim, mult)?;
         Ok(Self {
             attention,
             feed_forward,
@@ -129,7 +107,6 @@ pub struct PerceiverResamplerConfig {
     pub dim_head: usize,
     pub heads: usize,
     pub ff_mult: usize,
-    pub use_flash_attn: bool,
 }
 
 impl Default for PerceiverResamplerConfig {
@@ -142,7 +119,6 @@ impl Default for PerceiverResamplerConfig {
             dim_head: 64,
             heads: 8,
             ff_mult: 4,
-            use_flash_attn: false,
         }
     }
 }
@@ -171,7 +147,7 @@ impl PerceiverResampler {
         let mut layers = Vec::with_capacity(config.depth);
         for i in 0..config.depth {
             layers.push(AttentionBlock::new(
-                vb.pp(&format!("layer{}", i)),
+                vb.pp(format!("layers.{}", i)),
                 config.dim,
                 config.dim_head,
                 config.heads,
@@ -190,7 +166,7 @@ impl PerceiverResampler {
     }
 
     pub fn forward(&self, x: &Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
-        let batch = x.dims()[0];
+        let batch = x.shape().dim(0)?;
         let mut x = x.clone();
         if let Some(proj_context) = self.proj_context.as_ref() {
             x = proj_context.forward(&x.clone())?;
@@ -267,8 +243,8 @@ impl Attention {
         match kv.as_slice() {
             [k, v] => {
                 let q = self.reshape_head(&q)?;
-                let k = self.reshape_head(&k)?;
-                let v = self.reshape_head(&v)?;
+                let k = self.reshape_head(k)?;
+                let v = self.reshape_head(v)?;
                 let out = self
                     .attend
                     .forward(&q, &k, &v, mask)?

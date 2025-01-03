@@ -57,9 +57,9 @@ impl Default for HifiDecoderConfig {
 }
 
 pub struct HifiDecoder {
-    config: HifiDecoderConfig,
-    waveform_decoder: HifiganGenerator,
-    speaker_encoder: ResNetSpeakerEncoder,
+    pub config: HifiDecoderConfig,
+    pub waveform_decoder: HifiganGenerator,
+    pub speaker_encoder: ResNetSpeakerEncoder,
 }
 
 impl HifiDecoder {
@@ -74,7 +74,7 @@ impl HifiDecoder {
         )?;
 
         Ok(Self {
-            config: config.clone(),
+            config: *config,
             waveform_decoder,
             speaker_encoder,
         })
@@ -92,5 +92,9 @@ impl HifiDecoder {
 
         let o = self.waveform_decoder.forward(&z, g)?;
         Ok(o)
+    }
+
+    pub fn inference(&self, latents: &Tensor, g: &Tensor) -> Result<Tensor> {
+        self.forward(latents, Some(g))
     }
 }

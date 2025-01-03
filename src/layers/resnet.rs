@@ -1,6 +1,6 @@
 use candle_core::{Result, Tensor, D};
 use candle_nn::ops::softmax;
-use candle_nn::{self as nn, seq, BatchNormConfig, Conv1d, Conv2d, Sequential};
+use candle_nn::{self as nn, linear, seq, BatchNormConfig, Conv1d, Conv2d, Linear, Sequential};
 use candle_nn::{ops::sigmoid, Module, ModuleT, VarBuilder};
 
 #[derive(Debug)]
@@ -36,6 +36,19 @@ impl Conv2DSame {
             k,
         })
     }
+
+    fn load_se_layer_fc(vb: VarBuilder, i: usize, o: usize) -> Result<Self> {
+        let ws = vb.get((o, i), "weight")?;
+        let ws = ws.unsqueeze(D::Minus1)?.unsqueeze(D::Minus1)?;
+        let bs = vb.get(o, "bias")?;
+        let config = nn::Conv2dConfig {
+            stride: 1,
+            groups: 1,
+            ..Default::default()
+        };
+        let conv2d = Conv2d::new(ws, Some(bs), config);
+        Ok(Self { conv2d, s: 1, k: 1 })
+    }
 }
 
 impl Module for Conv2DSame {
@@ -70,19 +83,19 @@ impl DownsampleBlock {
             o,
             k,
             nn::Conv2dConfig {
-                stride: stride,
+                stride,
                 ..Default::default()
             },
-            vb.pp("conv"),
+            vb.pp("0"),
         )?;
-        let bn = nn::batch_norm(o, BatchNormConfig::default(), vb.pp("bn"))?;
+        let bn = nn::batch_norm(o, BatchNormConfig::default(), vb.pp("1"))?;
         Ok(Self { conv, bn })
     }
 }
 
 impl ModuleT for DownsampleBlock {
     fn forward_t(&self, xs: &Tensor, train: bool) -> Result<Tensor> {
-        let xs = self.conv.forward(&xs)?;
+        let xs = self.conv.forward(xs)?;
         let xs = self.bn.forward_t(&xs, train)?;
         Ok(xs)
     }
@@ -116,23 +129,15 @@ pub struct SELayer {
 
 impl SELayer {
     pub fn new(vb: VarBuilder, config: &SELayerConfig) -> Result<Self> {
-        let fc1 = Conv2DSame::new(
-            vb.pp("fc1"),
+        let fc1 = Conv2DSame::load_se_layer_fc(
+            vb.pp("fc.0"),
             config.channels,
             config.channels / config.reduction,
-            1,
-            1,
-            1,
-            true,
         )?;
-        let fc2 = Conv2DSame::new(
-            vb.pp("fc2"),
+        let fc2 = Conv2DSame::load_se_layer_fc(
+            vb.pp("fc.2"),
             config.channels / config.reduction,
             config.channels,
-            1,
-            1,
-            1,
-            true,
         )?;
         Ok(Self { fc1, fc2 })
     }
@@ -209,7 +214,10 @@ impl SEBasicBlock {
         )?;
 
         let bn2 = nn::batch_norm(config.planes, BatchNormConfig::default(), vb.pp("bn2"))?;
-        let se = SELayer::new(vb, &SELayerConfig::new(config.planes, config.reduction))?;
+        let se = SELayer::new(
+            vb.pp("se"),
+            &SELayerConfig::new(config.planes, config.reduction),
+        )?;
 
         Ok(Self {
             conv1,
@@ -225,7 +233,7 @@ impl SEBasicBlock {
 impl Module for SEBasicBlock {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let residual = xs;
-        let xs = self.conv1.forward(&xs)?;
+        let xs = self.conv1.forward(xs)?;
         let xs = xs.relu()?;
         let xs = self.bn1.forward_t(&xs, false)?;
 
@@ -234,7 +242,7 @@ impl Module for SEBasicBlock {
         let xs = self.se.forward(&xs)?;
 
         let residual = if let Some(downsample) = &self.downsample {
-            &downsample.forward_t(&residual, false)?
+            &downsample.forward_t(residual, false)?
         } else {
             residual
         };
@@ -260,9 +268,9 @@ impl ResNetAttentionBlock {
             nn::Conv1dConfig {
                 ..Default::default()
             },
-            vb.pp("conv1"),
+            vb.pp("0"),
         )?;
-        let bn1 = nn::batch_norm(128, BatchNormConfig::default(), vb.pp("bn1"))?;
+        let bn1 = nn::batch_norm(128, BatchNormConfig::default(), vb.pp("2"))?;
         let conv2 = nn::conv1d_no_bias(
             128,
             o,
@@ -270,7 +278,7 @@ impl ResNetAttentionBlock {
             nn::Conv1dConfig {
                 ..Default::default()
             },
-            vb.pp("conv2"),
+            vb.pp("3"),
         )?;
         Ok(Self { conv1, bn1, conv2 })
     }
@@ -278,7 +286,7 @@ impl ResNetAttentionBlock {
 
 impl ModuleT for ResNetAttentionBlock {
     fn forward_t(&self, xs: &Tensor, train: bool) -> Result<Tensor> {
-        let xs = self.conv1.forward(&xs)?;
+        let xs = self.conv1.forward(xs)?;
         let xs = xs.relu()?;
         let xs = self.bn1.forward_t(&xs, train)?;
         let xs = self.conv2.forward(&xs)?;
@@ -313,14 +321,14 @@ impl Default for ResNetSpeakerEncoderConfig {
 }
 
 fn create_layer(
-    vb: &VarBuilder,
+    vb: VarBuilder,
     inplanes: usize,
     planes: usize,
     num_blocks: usize,
     stride: usize,
 ) -> Sequential {
     let downsample = if stride != 1 || inplanes != planes {
-        Some(DownsampleBlock::new(vb.pp("downsample"), inplanes, planes, 1, stride).unwrap())
+        Some(DownsampleBlock::new(vb.pp("0.downsample"), inplanes, planes, 1, stride).unwrap())
     } else {
         None
     };
@@ -330,7 +338,7 @@ fn create_layer(
         SEBasicBlock::new(
             vb.pp("0"),
             &SEBasicBlockConfig {
-                inplanes: inplanes,
+                inplanes,
                 planes,
                 stride,
                 downsample,
@@ -344,7 +352,7 @@ fn create_layer(
     for i in 1..num_blocks {
         layers = layers.add(
             SEBasicBlock::new(
-                vb.pp(&i.to_string()),
+                vb.pp(i.to_string()),
                 &SEBasicBlockConfig {
                     inplanes,
                     planes,
@@ -361,7 +369,6 @@ fn create_layer(
 }
 
 pub struct ResNetSpeakerEncoder {
-    inplanes: usize,
     conv1: Conv2d,
     bn1: nn::BatchNorm,
     layer1: Sequential,
@@ -369,7 +376,7 @@ pub struct ResNetSpeakerEncoder {
     layer3: Sequential,
     layer4: Sequential,
     attention: ResNetAttentionBlock,
-    fc: Conv2d,
+    fc: Linear,
 }
 
 impl ResNetSpeakerEncoder {
@@ -391,31 +398,49 @@ impl ResNetSpeakerEncoder {
             vb.pp("bn1"),
         )?;
 
-        let inplanes = config.num_filters[0];
-        let layer1 = create_layer(&vb, inplanes, config.num_filters[0], config.layers[0], 1);
-        let layer2 = create_layer(&vb, inplanes, config.num_filters[1], config.layers[1], 2);
-        let layer3 = create_layer(&vb, inplanes, config.num_filters[2], config.layers[2], 2);
-        let layer4 = create_layer(&vb, inplanes, config.num_filters[3], config.layers[3], 2);
+        let layer1 = create_layer(
+            vb.pp("layer1"),
+            config.num_filters[0],
+            config.num_filters[0],
+            config.layers[0],
+            1,
+        );
+        let layer2 = create_layer(
+            vb.pp("layer2"),
+            config.num_filters[0],
+            config.num_filters[1],
+            config.layers[1],
+            2,
+        );
+        let layer3 = create_layer(
+            vb.pp("layer3"),
+            config.num_filters[1],
+            config.num_filters[2],
+            config.layers[2],
+            2,
+        );
+        let layer4 = create_layer(
+            vb.pp("layer4"),
+            config.num_filters[2],
+            config.num_filters[3],
+            config.layers[3],
+            2,
+        );
 
         let outmap_size = config.input_dim / 8;
         let attention = ResNetAttentionBlock::new(
             vb.pp("attention"),
             config.num_filters[3] * outmap_size,
-            config.proj_dim,
+            config.num_filters[3] * outmap_size,
         )?;
 
-        let fc = nn::conv2d_no_bias(
-            config.num_filters[3],
+        let fc = linear(
+            config.num_filters[3] * outmap_size * 2, // self.encoder_type == "ASP":
             config.proj_dim,
-            1,
-            nn::Conv2dConfig {
-                ..Default::default()
-            },
             vb.pp("fc"),
         )?;
 
         Ok(Self {
-            inplanes,
             conv1,
             bn1,
             layer1,
@@ -430,7 +455,7 @@ impl ResNetSpeakerEncoder {
 
 impl Module for ResNetSpeakerEncoder {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let xs = self.conv1.forward(&xs)?;
+        let xs = self.conv1.forward(xs)?;
         let xs = xs.relu()?;
         let xs = self.bn1.forward_t(&xs, false)?;
 

@@ -1,12 +1,16 @@
-use candle_core::Result;
-use candle_nn::VarBuilder;
+use candle_core::{IndexOp, Result, Tensor, D};
+use candle_nn::{Module, VarBuilder};
 
-use crate::layers::{
-    gpt::{GPTConfig, GPT},
-    hifigan_decoder::{HifiDecoder, HifiDecoderConfig},
-    tokenizer::{self, VoiceBpeTokenizer},
+use crate::{
+    audio_utils::{load_audio, resample_tensor},
+    layers::{
+        gpt::{GPTConfig, GPT},
+        hifigan_decoder::{HifiDecoder, HifiDecoderConfig},
+        tokenizer::VoiceBpeTokenizer,
+    },
 };
 
+#[derive(Debug, Clone)]
 pub struct XTTSConfig {
     // A dataclass to represent XTTS model arguments that define the model structure.
 
@@ -97,14 +101,14 @@ impl Default for XTTSConfig {
 }
 
 pub struct XTTS {
-    tokenizer: VoiceBpeTokenizer,
+    config: XTTSConfig,
     gpt: GPT,
     hifigan_decoder: HifiDecoder,
 }
 
 impl XTTS {
     pub fn new(vb: VarBuilder, config: &XTTSConfig) -> Result<Self> {
-        let tokenizer = VoiceBpeTokenizer::new();
+        // let tokenizer = VoiceBpeTokenizer::new();
 
         // if self.args.gpt_number_text_tokens -> True
         let gpt = GPT::new(
@@ -141,6 +145,83 @@ impl XTTS {
                 ..HifiDecoderConfig::default()
             },
         )?;
+
+        Ok(Self {
+            config: config.clone(),
+            gpt,
+            hifigan_decoder,
+        })
+    }
+
+    pub fn synthesize(&self) {
+        self.inference(None);
+        todo!()
+    }
+
+    pub fn get_gpt_cond_latents(
+        &self,
+        audio: &Tensor,
+        sr: u32,
+        length: usize,
+        chunk_length: usize,
+    ) -> Result<Tensor> {
+        let audio = if sr != 22050 {
+            resample_tensor(audio, 1, sr, 22050).unwrap()
+        } else {
+            audio.clone()
+        };
+
+        let audio = if length > 0 {
+            audio.i((.., ..225050 * length))?
+        } else {
+            audio.clone()
+        };
+
+        let cond_latent = if self.config.gpt_use_perceiver_resampler {
+            todo!()
+        } else {
+            todo!()
+        };
+
+        todo!()
+    }
+
+    pub fn get_conditioning_latents(&self, audio_path: &str, load_sr: u32) -> Result<Tensor> {
+        let audio = load_audio(audio_path, load_sr).unwrap();
+        let speaker_embedding = self.get_speaker_embedding(&audio).unwrap();
+
+        todo!()
+    }
+
+    pub fn get_speaker_embedding(&self, audio: &Tensor) -> Result<Tensor> {
+        self.hifigan_decoder
+            .speaker_encoder
+            .forward(audio)?
+            .unsqueeze(D::Minus1)
+    }
+
+    pub fn full_inference(&self) {
+        todo!()
+    }
+
+    pub fn inference(&self, speaker_embedding: Option<&Tensor>) {
+        let mut wavs: Vec<Tensor> = Vec::new();
+        let mut gpt_latents_list: Vec<Tensor> = Vec::new();
+        // let gpt_codes = self.gpt.generate().unwrap();
+
+        // expected_output_len
+
+        // text_len
+
+        // gpt_latents
+        // let gpt_latents = self.gpt.forward().unwrap();
+
+        // gpt_latents_list.push(gpt_latents.clone());
+        // wavs.push(
+        //     self.hifigan_decoder
+        //         .forward(&gpt_latents, speaker_embedding)
+        //         .unwrap(),
+        // );
 
         todo!()
     }
