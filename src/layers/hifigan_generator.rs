@@ -46,10 +46,10 @@ impl ResBlock1 {
                     Conv1dConfig {
                         stride: 1,
                         padding: get_padding(config.kernel_size, dilation),
-                        dilation: dilation,
+                        dilation,
                         groups: 1,
                     },
-                    vb.pp(&format!("convs1.{i}")),
+                    vb.pp(format!("convs1.{i}")),
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -67,7 +67,7 @@ impl ResBlock1 {
                         dilation: 1,
                         groups: 1,
                     },
-                    vb.pp(&format!("convs2.{i}")),
+                    vb.pp(format!("convs2.{i}")),
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -124,10 +124,10 @@ impl ResBlock2 {
                     Conv1dConfig {
                         stride: 1,
                         padding: get_padding(config.kernel_size, dilation),
-                        dilation: dilation,
+                        dilation,
                         groups: 1,
                     },
-                    vb.pp(&format!("conv.{i}")),
+                    vb.pp(format!("conv.{i}")),
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -251,13 +251,13 @@ impl HifiganGenerator {
                     dilation: 1,
                     groups: 1,
                 },
-                vb.pp(&format!("up_{i}")),
+                vb.pp(format!("up_{i}")),
             )
         })
         .collect::<Result<Vec<_>>>()?;
 
         let resblocks = (0..num_upsamples)
-            .map(|i| {
+            .flat_map(|i| {
                 let ch = config.upsample_initial_channel / 2_usize.pow(i as u32 + 1);
                 std::iter::zip(
                     config.resblock_kernel_sizes.iter(),
@@ -271,7 +271,7 @@ impl HifiganGenerator {
                             dilation: [d[0], d[1], d[2]],
                         };
                         ResBlock::ResBlock1(
-                            ResBlock1::new(vb.pp(&format!("resblock_{i}")), &resblock_config)
+                            ResBlock1::new(vb.pp(format!("resblocks.{i}")), &resblock_config)
                                 .unwrap(),
                         )
                     }
@@ -282,14 +282,13 @@ impl HifiganGenerator {
                             dilation: [d[0], d[1]],
                         };
                         ResBlock::ResBlock2(
-                            ResBlock2::new(vb.pp(&format!("resblock_{i}")), &resblock_config)
+                            ResBlock2::new(vb.pp(format!("resblocks.{i}")), &resblock_config)
                                 .unwrap(),
                         )
                     }
                 })
                 .collect::<Vec<_>>()
             })
-            .flatten()
             .collect::<Vec<_>>();
 
         let conv_post = conv1d_weight_norm(
@@ -338,7 +337,7 @@ impl HifiganGenerator {
                         1,
                         true,
                         Conv1dConfig::default(),
-                        vb.pp(&format!("cond_{i}")),
+                        vb.pp(format!("conds.{i}")),
                     )
                 })
                 .collect::<Result<Vec<_>>>()?;

@@ -1,18 +1,5 @@
-use std::arch::x86_64;
-
 use candle_core::{Result, Tensor, D};
 use candle_nn::{linear, linear_no_bias, ops::softmax, Linear, Module, VarBuilder};
-
-pub struct GEGLU {}
-
-impl GEGLU {
-    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        match (x.chunk(2, D::Minus1)?).as_slice() {
-            [x, gates] => x * gates.gelu()?,
-            _ => unreachable!(),
-        }
-    }
-}
 
 pub struct Attend {}
 
@@ -67,7 +54,6 @@ impl RMSNorm {
 
 pub struct FeedForward {
     linear1: Linear,
-    geglu: GEGLU,
     linear2: Linear,
 }
 
@@ -76,18 +62,11 @@ impl FeedForward {
         let dim_inner = dim * mult * 2 / 3;
         let linear1 = linear(dim, dim_inner * 2, vb.pp("linear1"))?;
         let linear2 = linear(dim_inner, dim, vb.pp("linear2"))?;
-        let geglu = GEGLU {};
-        Ok(Self {
-            linear1,
-            geglu,
-            linear2,
-        })
+        Ok(Self { linear1, linear2 })
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let x = self.linear1.forward(x)?;
-        let x = self.geglu.forward(&x)?;
-        self.linear2.forward(&x)
+        x.apply(&self.linear1)?.gelu()?.apply(&self.linear2)
     }
 }
 
@@ -129,7 +108,6 @@ pub struct PerceiverResamplerConfig {
     pub dim_head: usize,
     pub heads: usize,
     pub ff_mult: usize,
-    pub use_flash_attn: bool,
 }
 
 impl Default for PerceiverResamplerConfig {
@@ -142,7 +120,6 @@ impl Default for PerceiverResamplerConfig {
             dim_head: 64,
             heads: 8,
             ff_mult: 4,
-            use_flash_attn: false,
         }
     }
 }
@@ -190,7 +167,7 @@ impl PerceiverResampler {
     }
 
     pub fn forward(&self, x: &Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
-        let batch = x.dims()[0];
+        let batch = x.shape().dim(0)?;
         let mut x = x.clone();
         if let Some(proj_context) = self.proj_context.as_ref() {
             x = proj_context.forward(&x.clone())?;

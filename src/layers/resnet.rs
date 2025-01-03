@@ -70,7 +70,7 @@ impl DownsampleBlock {
             o,
             k,
             nn::Conv2dConfig {
-                stride: stride,
+                stride,
                 ..Default::default()
             },
             vb.pp("conv"),
@@ -313,6 +313,7 @@ impl Default for ResNetSpeakerEncoderConfig {
 }
 
 fn create_layer(
+    index: usize,
     vb: &VarBuilder,
     inplanes: usize,
     planes: usize,
@@ -328,9 +329,9 @@ fn create_layer(
     let mut layers = seq();
     layers = layers.add(
         SEBasicBlock::new(
-            vb.pp("0"),
+            vb.pp(format!("layer{}", index)),
             &SEBasicBlockConfig {
-                inplanes: inplanes,
+                inplanes,
                 planes,
                 stride,
                 downsample,
@@ -392,10 +393,10 @@ impl ResNetSpeakerEncoder {
         )?;
 
         let inplanes = config.num_filters[0];
-        let layer1 = create_layer(&vb, inplanes, config.num_filters[0], config.layers[0], 1);
-        let layer2 = create_layer(&vb, inplanes, config.num_filters[1], config.layers[1], 2);
-        let layer3 = create_layer(&vb, inplanes, config.num_filters[2], config.layers[2], 2);
-        let layer4 = create_layer(&vb, inplanes, config.num_filters[3], config.layers[3], 2);
+        let layer1 = create_layer(1, &vb, inplanes, config.num_filters[0], config.layers[0], 1);
+        let layer2 = create_layer(2, &vb, inplanes, config.num_filters[1], config.layers[1], 2);
+        let layer3 = create_layer(3, &vb, inplanes, config.num_filters[2], config.layers[2], 2);
+        let layer4 = create_layer(4, &vb, inplanes, config.num_filters[3], config.layers[3], 2);
 
         let outmap_size = config.input_dim / 8;
         let attention = ResNetAttentionBlock::new(
