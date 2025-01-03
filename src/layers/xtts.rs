@@ -1,10 +1,11 @@
-use candle_core::Result;
-use candle_nn::VarBuilder;
+use candle_core::{Result, Tensor, D};
+use candle_nn::{Module, VarBuilder};
+use candle_transformers::models::whisper::audio;
 
 use crate::layers::{
     gpt::{GPTConfig, GPT},
     hifigan_decoder::{HifiDecoder, HifiDecoderConfig},
-    tokenizer::{self, VoiceBpeTokenizer},
+    tokenizer::VoiceBpeTokenizer,
 };
 
 pub struct XTTSConfig {
@@ -97,14 +98,13 @@ impl Default for XTTSConfig {
 }
 
 pub struct XTTS {
-    tokenizer: VoiceBpeTokenizer,
     gpt: GPT,
     hifigan_decoder: HifiDecoder,
 }
 
 impl XTTS {
     pub fn new(vb: VarBuilder, config: &XTTSConfig) -> Result<Self> {
-        let tokenizer = VoiceBpeTokenizer::new();
+        // let tokenizer = VoiceBpeTokenizer::new();
 
         // if self.args.gpt_number_text_tokens -> True
         let gpt = GPT::new(
@@ -141,6 +141,47 @@ impl XTTS {
                 ..HifiDecoderConfig::default()
             },
         )?;
+
+        Ok(Self {
+            gpt,
+            hifigan_decoder,
+        })
+    }
+
+    pub fn synthesize(&self) {
+        self.inference(None);
+        todo!()
+    }
+
+    pub fn get_speaker_embedding(&self, audio: &Tensor) -> Result<Tensor> {
+        self.hifigan_decoder
+            .speaker_encoder
+            .forward(audio)?
+            .unsqueeze(D::Minus1)
+    }
+
+    pub fn full_inference(&self) {
+        todo!()
+    }
+
+    pub fn inference(&self, speaker_embedding: Option<&Tensor>) {
+        let mut wavs: Vec<Tensor> = Vec::new();
+        let mut gpt_latents_list: Vec<Tensor> = Vec::new();
+        // let gpt_codes = self.gpt.generate().unwrap();
+
+        // expected_output_len
+
+        // text_len
+
+        // gpt_latents
+        // let gpt_latents = self.gpt.forward().unwrap();
+
+        // gpt_latents_list.push(gpt_latents.clone());
+        // wavs.push(
+        //     self.hifigan_decoder
+        //         .forward(&gpt_latents, speaker_embedding)
+        //         .unwrap(),
+        // );
 
         todo!()
     }

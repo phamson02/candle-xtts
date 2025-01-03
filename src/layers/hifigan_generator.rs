@@ -1,10 +1,70 @@
 use candle_core::{Result, Tensor};
 use candle_nn::ops::leaky_relu;
 use candle_nn::{Conv1d, Conv1dConfig, ConvTranspose1d, ConvTranspose1dConfig, Module, VarBuilder};
-use candle_transformers::models::encodec::conv_transpose1d_weight_norm;
 use std::iter::Iterator;
 
-use crate::layers::utils::{conv1d, conv1d_weight_norm};
+pub fn conv1d(
+    in_c: usize,
+    out_c: usize,
+    kernel_size: usize,
+    bias: bool,
+    config: candle_nn::Conv1dConfig,
+    vb: VarBuilder,
+) -> Result<Conv1d> {
+    let weight = vb.get((out_c, in_c, kernel_size), "weight")?;
+    let bias = if bias {
+        Some(vb.get(out_c, "bias")?)
+    } else {
+        None
+    };
+    Ok(Conv1d::new(weight, bias, config))
+}
+
+fn conv1d_weight_norm(
+    in_c: usize,
+    out_c: usize,
+    kernel_size: usize,
+    bias: bool,
+    config: candle_nn::Conv1dConfig,
+    vb: VarBuilder,
+) -> Result<Conv1d> {
+    let weight_g = vb.get((out_c, 1, 1), "parametrizations.weight.original0")?;
+    let weight_v = vb.get(
+        (out_c, in_c, kernel_size),
+        "parametrizations.weight.original1",
+    )?;
+    let norm_v = weight_v.sqr()?.sum_keepdim((1, 2))?.sqrt()?;
+    let weight = weight_v.broadcast_mul(&weight_g)?.broadcast_div(&norm_v)?;
+    let bias = if bias {
+        Some(vb.get(out_c, "bias")?)
+    } else {
+        None
+    };
+    Ok(Conv1d::new(weight, bias, config))
+}
+
+fn conv_transpose1d_weight_norm(
+    in_c: usize,
+    out_c: usize,
+    kernel_size: usize,
+    bias: bool,
+    config: candle_nn::ConvTranspose1dConfig,
+    vb: VarBuilder,
+) -> Result<ConvTranspose1d> {
+    let weight_g = vb.get((in_c, 1, 1), "parametrizations.weight.original0")?;
+    let weight_v = vb.get(
+        (in_c, out_c, kernel_size),
+        "parametrizations.weight.original1",
+    )?;
+    let norm_v = weight_v.sqr()?.sum_keepdim((1, 2))?.sqrt()?;
+    let weight = weight_v.broadcast_mul(&weight_g)?.broadcast_div(&norm_v)?;
+    let bias = if bias {
+        Some(vb.get(out_c, "bias")?)
+    } else {
+        None
+    };
+    Ok(ConvTranspose1d::new(weight, bias, config))
+}
 
 fn get_padding(kernel_size: usize, dilation: usize) -> usize {
     (kernel_size * dilation - dilation) / 2
@@ -46,10 +106,10 @@ impl ResBlock1 {
                     Conv1dConfig {
                         stride: 1,
                         padding: get_padding(config.kernel_size, dilation),
-                        dilation: dilation,
+                        dilation,
                         groups: 1,
                     },
-                    vb.pp(&format!("convs1.{i}")),
+                    vb.pp(format!("convs1.{i}")),
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -67,7 +127,7 @@ impl ResBlock1 {
                         dilation: 1,
                         groups: 1,
                     },
-                    vb.pp(&format!("convs2.{i}")),
+                    vb.pp(format!("convs2.{i}")),
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -124,10 +184,10 @@ impl ResBlock2 {
                     Conv1dConfig {
                         stride: 1,
                         padding: get_padding(config.kernel_size, dilation),
-                        dilation: dilation,
+                        dilation,
                         groups: 1,
                     },
-                    vb.pp(&format!("conv.{i}")),
+                    vb.pp(format!("conv.{i}")),
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -176,8 +236,6 @@ pub struct HifiganGeneratorConfig {
     upsample_factors: Vec<usize>,
     inference_padding: usize,
     cond_channels: usize,
-    conv_pre_weight_norm: bool,
-    conv_post_weight_norm: bool,
     conv_post_bias: bool,
     cond_in_each_up_layer: bool,
 }
@@ -195,8 +253,6 @@ impl HifiganGeneratorConfig {
             upsample_factors: vec![8, 8, 2, 2],
             inference_padding: 0,
             cond_channels: 512,
-            conv_pre_weight_norm: false,
-            conv_post_weight_norm: false,
             conv_post_bias: false,
             cond_in_each_up_layer: true,
         }
@@ -219,7 +275,7 @@ impl HifiganGenerator {
         let num_kernels = config.upsample_kernel_sizes.len();
         let num_upsamples = config.upsample_factors.len();
         let cond_in_each_up_layer = config.cond_in_each_up_layer;
-        let conv_pre = conv1d_weight_norm(
+        let conv_pre = conv1d(
             config.in_channels,
             config.upsample_initial_channel,
             7,
@@ -251,19 +307,20 @@ impl HifiganGenerator {
                     dilation: 1,
                     groups: 1,
                 },
-                vb.pp(&format!("up_{i}")),
+                vb.pp(format!("ups.{i}")),
             )
         })
         .collect::<Result<Vec<_>>>()?;
 
         let resblocks = (0..num_upsamples)
-            .map(|i| {
+            .flat_map(|i| {
                 let ch = config.upsample_initial_channel / 2_usize.pow(i as u32 + 1);
                 std::iter::zip(
                     config.resblock_kernel_sizes.iter(),
                     config.resblock_dilation_sizes.iter(),
                 )
-                .map(|(&k, d)| match config.resblock_type {
+                .enumerate()
+                .map(|(j, (&k, d))| match config.resblock_type {
                     ResBlockType::ResBlock1 => {
                         let resblock_config = ResBlock1Config {
                             channels: ch,
@@ -271,8 +328,14 @@ impl HifiganGenerator {
                             dilation: [d[0], d[1], d[2]],
                         };
                         ResBlock::ResBlock1(
-                            ResBlock1::new(vb.pp(&format!("resblock_{i}")), &resblock_config)
-                                .unwrap(),
+                            ResBlock1::new(
+                                vb.pp(format!(
+                                    "resblocks.{}",
+                                    i * config.resblock_kernel_sizes.len() + j
+                                )),
+                                &resblock_config,
+                            )
+                            .unwrap(),
                         )
                     }
                     ResBlockType::ResBlock2 => {
@@ -282,17 +345,22 @@ impl HifiganGenerator {
                             dilation: [d[0], d[1]],
                         };
                         ResBlock::ResBlock2(
-                            ResBlock2::new(vb.pp(&format!("resblock_{i}")), &resblock_config)
-                                .unwrap(),
+                            ResBlock2::new(
+                                vb.pp(format!(
+                                    "resblocks.{}",
+                                    i * config.resblock_kernel_sizes.len() + j
+                                )),
+                                &resblock_config,
+                            )
+                            .unwrap(),
                         )
                     }
                 })
                 .collect::<Vec<_>>()
             })
-            .flatten()
             .collect::<Vec<_>>();
 
-        let conv_post = conv1d_weight_norm(
+        let conv_post = conv1d(
             config.upsample_initial_channel / 2_usize.pow(num_upsamples as u32),
             config.out_channels,
             7,
@@ -319,16 +387,6 @@ impl HifiganGenerator {
             None
         };
 
-        // config.conv_pre_weight_norm
-        if !config.conv_pre_weight_norm {
-            todo!()
-        }
-
-        // config.conv_post_weight_norm
-        if !config.conv_post_weight_norm {
-            todo!()
-        }
-
         let conds = if cond_in_each_up_layer {
             let conds = (0..num_upsamples)
                 .map(|i| {
@@ -338,7 +396,7 @@ impl HifiganGenerator {
                         1,
                         true,
                         Conv1dConfig::default(),
-                        vb.pp(&format!("cond_{i}")),
+                        vb.pp(format!("conds.{i}")),
                     )
                 })
                 .collect::<Result<Vec<_>>>()?;
